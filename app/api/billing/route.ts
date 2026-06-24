@@ -43,7 +43,6 @@ export async function POST(req: NextRequest) {
       subscription_data: {
         metadata: {
           workspace_id,
-          user_id: userId,
         },
         trial_period_days: 14,
       },
