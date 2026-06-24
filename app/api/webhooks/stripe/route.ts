@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { stripe } from "@/lib/stripe";
+import { getStripeClient } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/server";
 import type Stripe from "stripe";
 
@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
   let event: Stripe.Event;
 
   try {
+    const stripe = getStripeClient();
     event = stripe.webhooks.constructEvent(
       body,
       signature,
@@ -49,6 +50,7 @@ export async function POST(req: NextRequest) {
           .eq("id", workspace_id);
 
         if (session.subscription) {
+          const stripe = getStripeClient();
           const sub = await stripe.subscriptions.retrieve(
             session.subscription as string
           );
