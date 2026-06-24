@@ -1,0 +1,170 @@
+import { NextRequest, NextResponse } from "next/server";
+import { stripe } from "@/lib/stripe";
+import { createAdminClient } from "@/lib/supabase/server";
+import type Stripe from "stripe";
+
+// Disable body parsing — must read raw body for Stripe signature verification
+export const dynamic = "force-dynamic";
+
+export async function POST(req: NextRequest) {
+  const body = await req.text();
+  const signature = req.headers.get("stripe-signature");
+
+  if (!signature) {
+    return NextResponse.json({ error: "Missing signature" }, { status: 400 });
+  }
+
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      body,
+      signature,
+      process.env.STRIPE_WEBHOOK_SECRET!
+    );
+  } catch (err) {
+    console.error("[Stripe Webhook] Signature verification failed:", err);
+    return NextResponse.json(
+      { error: "Webhook signature verification failed" },
+      { status: 400 }
+    );
+  }
+
+  const supabase = await createAdminClient();
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object as Stripe.Checkout.Session;
+        const { workspace_id, plan, billing_cycle } = session.metadata ?? {};
+
+        if (!workspace_id || !plan) break;
+
+        // Update workspace plan
+        await supabase
+          .from("workspaces")
+          .update({
+            plan,
+            plan_status: "active",
+            stripe_customer_id: session.customer as string,
+            stripe_subscription_id: session.subscription as string,
+          })
+          .eq("id", workspace_id);
+
+        // Create subscription record
+        const subscription = await stripe.subscriptions.retrieve(
+          session.subscription as string
+        );
+
+        await supabase.from("subscriptions").insert({
+          workspace_id,
+          plan,
+          billing_cycle: billing_cycle ?? "monthly",
+          amount: (subscription.items.data[0]?.price.unit_amount ?? 0) / 100,
+          currency: subscription.currency,
+          status: "active",
+          current_period_start: new Date(
+            subscription.current_period_start * 1000
+          ).toISOString(),
+          current_period_end: new Date(
+            subscription.current_period_end * 1000
+          ).toISOString(),
+          stripe_subscription_id: subscription.id,
+        });
+
+        break;
+      }
+
+      case "customer.subscription.updated": {
+        const subscription = event.data.object as Stripe.Subscription;
+        const workspaceId = subscription.metadata?.workspace_id;
+        if (!workspaceId) break;
+
+        await supabase
+          .from("subscriptions")
+          .update({
+            status: subscription.status,
+            current_period_start: new Date(
+              subscription.current_period_start * 1000
+            ).toISOString(),
+            current_period_end: new Date(
+              subscription.current_period_end * 1000
+            ).toISOString(),
+            cancel_at_period_end: subscription.cancel_at_period_end,
+          })
+          .eq("stripe_subscription_id", subscription.id);
+
+        // Sync workspace plan status
+        await supabase
+          .from("workspaces")
+          .update({
+            plan_status:
+              subscription.status === "active" ? "active" : "past_due",
+          })
+          .eq("id", workspaceId);
+
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object as Stripe.Subscription;
+        const workspaceId = subscription.metadata?.workspace_id;
+        if (!workspaceId) break;
+
+        await supabase
+          .from("workspaces")
+          .update({ plan: "starter", plan_status: "canceled" })
+          .eq("id", workspaceId);
+
+        await supabase
+          .from("subscriptions")
+          .update({ status: "canceled" })
+          .eq("stripe_subscription_id", subscription.id);
+
+        break;
+      }
+
+      case "invoice.payment_succeeded": {
+        const invoice = event.data.object as Stripe.Invoice;
+        const workspaceId = invoice.subscription_details?.metadata?.workspace_id;
+        if (!workspaceId) break;
+
+        await supabase.from("payments").insert({
+          workspace_id: workspaceId,
+          amount: (invoice.amount_paid ?? 0) / 100,
+          currency: invoice.currency,
+          status: "succeeded",
+          stripe_payment_intent_id: invoice.payment_intent as string,
+          stripe_charge_id: invoice.charge as string,
+          metadata: { invoice_id: invoice.id },
+        });
+
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as Stripe.Invoice;
+        const workspaceId = invoice.subscription_details?.metadata?.workspace_id;
+        if (!workspaceId) break;
+
+        await supabase
+          .from("workspaces")
+          .update({ plan_status: "past_due" })
+          .eq("id", workspaceId);
+
+        break;
+      }
+
+      default:
+        console.log(`[Stripe Webhook] Unhandled event: ${event.type}`);
+    }
+  } catch (err) {
+    console.error(`[Stripe Webhook] Handler error for ${event.type}:`, err);
+    return NextResponse.json(
+      { error: "Webhook handler error" },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({ received: true });
+}
