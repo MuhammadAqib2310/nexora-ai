@@ -3,7 +3,6 @@ import { stripe } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/server";
 import type Stripe from "stripe";
 
-// Disable body parsing — must read raw body for Stripe signature verification
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
@@ -37,10 +36,8 @@ export async function POST(req: NextRequest) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         const { workspace_id, plan, billing_cycle } = session.metadata ?? {};
-
         if (!workspace_id || !plan) break;
 
-        // Update workspace plan
         await supabase
           .from("workspaces")
           .update({
@@ -51,64 +48,49 @@ export async function POST(req: NextRequest) {
           })
           .eq("id", workspace_id);
 
-        // Create subscription record
-        const subscription = await stripe.subscriptions.retrieve(
-          session.subscription as string
-        );
-
-        await supabase.from("subscriptions").insert({
-          workspace_id,
-          plan,
-          billing_cycle: billing_cycle ?? "monthly",
-          amount: (subscription.items.data[0]?.price.unit_amount ?? 0) / 100,
-          currency: subscription.currency,
-          status: "active",
-          current_period_start: new Date(
-            subscription.current_period_start * 1000
-          ).toISOString(),
-          current_period_end: new Date(
-            subscription.current_period_end * 1000
-          ).toISOString(),
-          stripe_subscription_id: subscription.id,
-        });
-
+        if (session.subscription) {
+          const sub = await stripe.subscriptions.retrieve(
+            session.subscription as string
+          );
+          const item = sub.items.data[0];
+          await supabase.from("subscriptions").insert({
+            workspace_id,
+            plan,
+            billing_cycle: billing_cycle ?? "monthly",
+            amount: item ? (item.price.unit_amount ?? 0) / 100 : 0,
+            currency: sub.currency,
+            status: sub.status,
+            stripe_subscription_id: sub.id,
+          });
+        }
         break;
       }
 
       case "customer.subscription.updated": {
-        const subscription = event.data.object as Stripe.Subscription;
-        const workspaceId = subscription.metadata?.workspace_id;
+        const sub = event.data.object as Stripe.Subscription;
+        const workspaceId = sub.metadata?.workspace_id;
         if (!workspaceId) break;
 
         await supabase
           .from("subscriptions")
           .update({
-            status: subscription.status,
-            current_period_start: new Date(
-              subscription.current_period_start * 1000
-            ).toISOString(),
-            current_period_end: new Date(
-              subscription.current_period_end * 1000
-            ).toISOString(),
-            cancel_at_period_end: subscription.cancel_at_period_end,
+            status: sub.status,
+            cancel_at_period_end: sub.cancel_at_period_end,
           })
-          .eq("stripe_subscription_id", subscription.id);
+          .eq("stripe_subscription_id", sub.id);
 
-        // Sync workspace plan status
         await supabase
           .from("workspaces")
           .update({
-            plan_status:
-              subscription.status === "active" ? "active" : "past_due",
+            plan_status: sub.status === "active" ? "active" : "past_due",
           })
           .eq("id", workspaceId);
-
         break;
       }
 
       case "customer.subscription.deleted": {
-        const subscription = event.data.object as Stripe.Subscription;
-        const workspaceId = subscription.metadata?.workspace_id;
+        const sub = event.data.object as Stripe.Subscription;
+        const workspaceId = sub.metadata?.workspace_id;
         if (!workspaceId) break;
 
         await supabase
@@ -119,51 +101,49 @@ export async function POST(req: NextRequest) {
         await supabase
           .from("subscriptions")
           .update({ status: "canceled" })
-          .eq("stripe_subscription_id", subscription.id);
-
+          .eq("stripe_subscription_id", sub.id);
         break;
       }
 
       case "invoice.payment_succeeded": {
-        const invoice = event.data.object as Stripe.Invoice;
-        const workspaceId = invoice.subscription_details?.metadata?.workspace_id;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const invoice = event.data.object as any;
+        const workspaceId: string | null =
+          invoice?.subscription_details?.metadata?.workspace_id ?? null;
         if (!workspaceId) break;
 
         await supabase.from("payments").insert({
           workspace_id: workspaceId,
-          amount: (invoice.amount_paid ?? 0) / 100,
-          currency: invoice.currency,
+          amount: ((invoice.amount_paid as number) ?? 0) / 100,
+          currency: invoice.currency ?? "usd",
           status: "succeeded",
-          stripe_payment_intent_id: invoice.payment_intent as string,
-          stripe_charge_id: invoice.charge as string,
+          stripe_payment_intent_id: (invoice.payment_intent as string) ?? null,
+          stripe_charge_id: (invoice.charge as string) ?? null,
           metadata: { invoice_id: invoice.id },
         });
-
         break;
       }
 
       case "invoice.payment_failed": {
-        const invoice = event.data.object as Stripe.Invoice;
-        const workspaceId = invoice.subscription_details?.metadata?.workspace_id;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const invoice = event.data.object as any;
+        const workspaceId: string | null =
+          invoice?.subscription_details?.metadata?.workspace_id ?? null;
         if (!workspaceId) break;
 
         await supabase
           .from("workspaces")
           .update({ plan_status: "past_due" })
           .eq("id", workspaceId);
-
         break;
       }
 
       default:
-        console.log(`[Stripe Webhook] Unhandled event: ${event.type}`);
+        break;
     }
   } catch (err) {
     console.error(`[Stripe Webhook] Handler error for ${event.type}:`, err);
-    return NextResponse.json(
-      { error: "Webhook handler error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Webhook handler error" }, { status: 500 });
   }
 
   return NextResponse.json({ received: true });

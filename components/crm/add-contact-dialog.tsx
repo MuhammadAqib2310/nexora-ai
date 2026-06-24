@@ -2,8 +2,6 @@
 
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
 import { toast } from "sonner";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -15,19 +13,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2 } from "lucide-react";
 import type { ContactFormData } from "@/lib/hooks/use-contacts";
 
-const schema = z.object({
-  first_name: z.string().min(1, "First name is required"),
-  last_name: z.string().min(1, "Last name is required"),
-  email: z.string().email("Invalid email address").or(z.literal("")),
-  phone: z.string().optional().default(""),
-  company: z.string().optional().default(""),
-  job_title: z.string().optional().default(""),
-  source: z.string().default("manual"),
-  tags: z.array(z.string()).default([]),
-});
-
-type FormValues = z.infer<typeof schema>;
-
 interface AddContactDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -37,16 +22,20 @@ interface AddContactDialogProps {
 export function AddContactDialog({ open, onOpenChange, onSubmit }: AddContactDialogProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: { first_name: "", last_name: "", email: "", phone: "", company: "", job_title: "", source: "manual", tags: [] },
-  });
+  const { register, handleSubmit, reset, setValue, formState: { errors } } =
+    useForm<ContactFormData>({
+      defaultValues: {
+        first_name: "", last_name: "", email: "", phone: "",
+        company: "", job_title: "", source: "manual", tags: [],
+      },
+    });
 
-  const handleFormSubmit = async (data: FormValues) => {
+  const handleFormSubmit = async (data: ContactFormData) => {
+    if (!data.first_name.trim()) return;
     setIsSubmitting(true);
     try {
-      await onSubmit(data as ContactFormData);
-      toast.success(`Contact ${data.first_name} ${data.last_name} added successfully`);
+      await onSubmit(data);
+      toast.success(`Contact ${data.first_name} ${data.last_name} added`);
       reset();
       onOpenChange(false);
     } catch {
@@ -67,39 +56,21 @@ export function AddContactDialog({ open, onOpenChange, onSubmit }: AddContactDia
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="first_name">First Name <span className="text-red-500">*</span></Label>
-              <Input
-                id="first_name"
-                placeholder="Sarah"
-                {...register("first_name")}
-                aria-invalid={!!errors.first_name}
-                className={errors.first_name ? "border-red-400" : ""}
-              />
-              {errors.first_name && <p className="text-xs text-red-500">{errors.first_name.message}</p>}
+              <Input id="first_name" placeholder="Sarah" {...register("first_name", { required: true })}
+                className={errors.first_name ? "border-red-400" : ""} />
+              {errors.first_name && <p className="text-xs text-red-500">First name is required</p>}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="last_name">Last Name <span className="text-red-500">*</span></Label>
-              <Input
-                id="last_name"
-                placeholder="Johnson"
-                {...register("last_name")}
-                aria-invalid={!!errors.last_name}
-                className={errors.last_name ? "border-red-400" : ""}
-              />
-              {errors.last_name && <p className="text-xs text-red-500">{errors.last_name.message}</p>}
+              <Input id="last_name" placeholder="Johnson" {...register("last_name", { required: true })}
+                className={errors.last_name ? "border-red-400" : ""} />
+              {errors.last_name && <p className="text-xs text-red-500">Last name is required</p>}
             </div>
           </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="email">Email Address</Label>
-            <Input
-              id="email"
-              type="email"
-              placeholder="sarah@company.com"
-              {...register("email")}
-              aria-invalid={!!errors.email}
-              className={errors.email ? "border-red-400" : ""}
-            />
-            {errors.email && <p className="text-xs text-red-500">{errors.email.message}</p>}
+            <Input id="email" type="email" placeholder="sarah@company.com" {...register("email")} />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -142,9 +113,7 @@ export function AddContactDialog({ open, onOpenChange, onSubmit }: AddContactDia
               Cancel
             </Button>
             <Button type="submit" disabled={isSubmitting}>
-              {isSubmitting ? (
-                <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />Saving...</>
-              ) : "Add Contact"}
+              {isSubmitting ? <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />Saving...</> : "Add Contact"}
             </Button>
           </DialogFooter>
         </form>

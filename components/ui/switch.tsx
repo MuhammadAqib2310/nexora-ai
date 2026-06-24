@@ -1,11 +1,7 @@
 "use client";
 
 import * as React from "react";
-import * as SwitchPrimitives from "@radix-ui/react-switch";
 import { cn } from "@/lib/utils";
-
-// Minimal Switch — Radix Switch doesn't exist as a separate package
-// Using a plain HTML implementation
 const Switch = React.forwardRef<
   HTMLButtonElement,
   React.ButtonHTMLAttributes<HTMLButtonElement> & {

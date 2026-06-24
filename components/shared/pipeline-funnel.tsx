@@ -52,11 +52,8 @@ export function PipelineFunnel() {
               tickLine={false}
             />
             <Tooltip
-              formatter={(value: number, name: string) =>
-                name === "count"
-                  ? [value, "Deals"]
-                  : [formatCurrency(value), "Value"]
-              }
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              formatter={(value: any) => [formatCurrency(Number(value) || 0), "Value"]}
               contentStyle={{
                 background: "#fff",
                 border: "1px solid #e5e7eb",
